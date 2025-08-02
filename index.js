@@ -46,4 +46,12 @@ for (const file of eventFiles) {
   }
 }
 
-client.login(process.env.DISCORD_TOKEN);
+let activeToken;
+
+if (process.env.NODE_ENV === "development") {
+  activeToken = process.env.DISCORD_TOKEN_DEV;
+} else {
+  activeToken = process.env.DISCORD_TOKEN;
+}
+
+client.login(activeToken);
