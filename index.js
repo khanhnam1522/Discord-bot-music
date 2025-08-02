@@ -69,28 +69,21 @@ client.on("messageCreate", async (message) => {
 // Listener for button interactions
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isButton()) return;
-
   const serverQueue = queue.get(interaction.guildId);
-
-  // We are now deferring inside the handlers that need it.
-  // await interaction.deferUpdate(); // REMOVE THIS LINE
 
   switch (interaction.customId) {
     case "skip":
-      await interaction.deferUpdate(); // Acknowledge the interaction immediately
+      await interaction.deferUpdate();
       handleSkip(interaction, serverQueue);
       break;
     case "stop":
-      // handleStop sends its own message, so no deferUpdate is needed.
       handleStop(interaction, serverQueue);
       break;
     case "queue":
-      // handleQueue sends its own message, so no deferUpdate is needed.
       handleQueue(interaction, serverQueue);
       break;
     case "shuffle":
-      await interaction.deferUpdate();
-      handleShuffle(interaction, serverQueue);
+      await handleShuffle(interaction, serverQueue);
       break;
     case "loop":
       await handleLoop(interaction, serverQueue);
@@ -100,6 +93,7 @@ client.on("interactionCreate", async (interaction) => {
 
 function createButtonRow(serverQueue) {
   const isLooping = serverQueue?.loop || false;
+  const isShuffling = serverQueue?.shuffle || false; // Check shuffle state
 
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -119,13 +113,13 @@ function createButtonRow(serverQueue) {
       .setEmoji("📜"),
     new ButtonBuilder()
       .setCustomId("shuffle")
-      .setLabel("Shuffle")
-      .setStyle(ButtonStyle.Secondary)
+      .setLabel(isShuffling ? "Shuffle: On" : "Shuffle: Off") // Update Label
+      .setStyle(isShuffling ? ButtonStyle.Success : ButtonStyle.Secondary) // Update Style
       .setEmoji("🔀"),
     new ButtonBuilder()
       .setCustomId("loop")
       .setLabel(isLooping ? "Loop: On" : "Loop: Off")
-      .setStyle(isLooping ? ButtonStyle.Success : ButtonStyle.Secondary) // Green when on, Gray when off
+      .setStyle(isLooping ? ButtonStyle.Success : ButtonStyle.Secondary)
       .setEmoji("🔁")
   );
 }
@@ -205,6 +199,7 @@ async function handlePlay(message, args, serverQueue) {
       player: createAudioPlayer({ behaviors: { noSubscriber: "stop" } }),
       playing: true,
       loop: false,
+      shuffle: false,
       nowPlayingMessage: null, // Track the message
     };
     queue.set(message.guild.id, newQueue);
@@ -311,21 +306,32 @@ function handleQueue(source, serverQueue) {
   }
 }
 
-function handleShuffle(source, serverQueue) {
-  const user = source.member;
-  if (!user.voice.channel || !serverQueue || serverQueue.songs.length < 2) {
-    return; // Fails silently
+async function handleShuffle(interaction, serverQueue) {
+  const user = interaction.member;
+  if (!user.voice.channel) {
+    return interaction.reply({
+      content: "You must be in a voice channel to shuffle!",
+      ephemeral: true,
+    });
   }
-  const nowPlaying = serverQueue.songs.shift();
-  for (let i = serverQueue.songs.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [serverQueue.songs[i], serverQueue.songs[j]] = [
-      serverQueue.songs[j],
-      serverQueue.songs[i],
-    ];
+  if (!serverQueue) {
+    return interaction.reply({
+      content: "There is no queue to enable shuffle mode on.",
+      ephemeral: true,
+    });
   }
-  serverQueue.songs.unshift(nowPlaying);
-  // No message is sent, but the user can verify by checking the queue.
+
+  // Acknowledge the interaction
+  await interaction.deferUpdate();
+
+  // Toggle the shuffle state
+  serverQueue.shuffle = !serverQueue.shuffle;
+
+  // Update the message with the new button state
+  const row = createButtonRow(serverQueue);
+  if (serverQueue.nowPlayingMessage) {
+    await serverQueue.nowPlayingMessage.edit({ components: [row] });
+  }
 }
 
 // MODIFIED - Updates the buttons instead of sending a message
@@ -388,10 +394,24 @@ async function playSong(guildId, song) {
   serverQueue.player.once(AudioPlayerStatus.Idle, () => {
     const currentQueue = queue.get(guildId);
     if (currentQueue) {
-      const songThatFinished = currentQueue.songs.shift();
+      // Handle loop mode
       if (currentQueue.loop) {
-        currentQueue.songs.push(songThatFinished);
+        currentQueue.songs.push(currentQueue.songs.shift());
+      } else {
+        currentQueue.songs.shift();
       }
+
+      // If shuffle is on, pick a random next song and move it to the front
+      if (currentQueue.songs.length > 0 && currentQueue.shuffle) {
+        const randomIndex = Math.floor(
+          Math.random() * currentQueue.songs.length
+        );
+        // Remove the random song from its position and place it at the front
+        const nextSong = currentQueue.songs.splice(randomIndex, 1)[0];
+        currentQueue.songs.unshift(nextSong);
+      }
+
+      // Play whatever is now at the front of the queue
       playSong(guildId, currentQueue.songs[0]);
     }
   });
