@@ -112,7 +112,6 @@ async function handleModalJump(interaction, serverQueue) {
   serverQueue.player.stop();
 }
 
-// Update the main interaction listener
 client.on("interactionCreate", async (interaction) => {
   const serverQueue = queue.get(interaction.guildId);
 
@@ -124,18 +123,10 @@ client.on("interactionCreate", async (interaction) => {
     return;
   }
 
-  // Handle Select Menu Interactions
-  if (interaction.isStringSelectMenu()) {
-    if (interaction.customId === "jump_to_song") {
-      await handleJumpToSong(interaction, serverQueue);
-    }
-    return;
-  }
-
   // Handle Button Interactions
   if (interaction.isButton()) {
     switch (interaction.customId) {
-      case "jump_modal": // Handle the button that opens the modal
+      case "jump_modal":
         const modal = new ModalBuilder()
           .setCustomId("jump_modal_submit")
           .setTitle("Jump to Song");
@@ -226,58 +217,7 @@ function createActionRows(serverQueue) {
       .setDisabled(currentPage >= totalPages - 1)
   );
 
-  const components = [playbackControls, paginationControls];
-
-  // --- ROW 3: Jump to Song Select Menu ---
-  const upcomingSongs = serverQueue.songs.slice(1);
-  // MODIFICATION: Populate the dropdown with all upcoming songs (up to 25)
-  if (upcomingSongs.length > 0) {
-    const { StringSelectMenuBuilder } = require("discord.js");
-    const jumpOptions = upcomingSongs.slice(0, 25).map((song, index) => {
-      const songIndex = index + 1;
-      return {
-        label: `${songIndex}. ${song.title}`.substring(0, 100),
-        value: songIndex.toString(),
-      };
-    });
-
-    const jumpMenu = new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder()
-        .setCustomId("jump_to_song")
-        .setPlaceholder("Jump to a song...")
-        .addOptions(jumpOptions)
-    );
-    components.push(jumpMenu);
-  }
-
-  return components;
-}
-
-// Add this new function to handle the "Jump to Song" action
-async function handleJumpToSong(interaction, serverQueue) {
-  if (!interaction.member.voice.channel || !serverQueue) {
-    return; // Fail silently
-  }
-
-  const targetIndex = parseInt(interaction.values[0], 10);
-  if (
-    isNaN(targetIndex) ||
-    targetIndex < 1 ||
-    targetIndex >= serverQueue.songs.length
-  ) {
-    return; // Invalid selection, fail silently
-  }
-
-  // Acknowledge the interaction silently
-  await interaction.deferUpdate();
-
-  // Get all songs between the currently playing one and the target song
-  const songsToMove = serverQueue.songs.splice(1, targetIndex - 1);
-  // Add them to the end of the queue
-  serverQueue.songs.push(...songsToMove);
-
-  // Skip the current song to play the selected one next
-  serverQueue.player.stop();
+  return [playbackControls, paginationControls];
 }
 
 function generatePanelPayload(serverQueue) {
