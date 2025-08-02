@@ -273,6 +273,15 @@ async function handlePlay(message, args, serverQueue) {
     );
   }
   if (!serverQueue) {
+    // --- SHUFFLE LOGIC ADDED HERE ---
+    // If more than one song was added, shuffle the array before creating the queue.
+    if (songs.length > 1) {
+      for (let i = songs.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [songs[i], songs[j]] = [songs[j], songs[i]];
+      }
+    }
+
     const newQueue = {
       textChannel: message.channel,
       voiceChannel: voiceChannel,
@@ -281,11 +290,13 @@ async function handlePlay(message, args, serverQueue) {
       player: createAudioPlayer({ behaviors: { noSubscriber: "stop" } }),
       playing: true,
       loop: true,
-      shuffle: false, // Shuffle is now a one-time action, not a mode
-      currentPage: 0, // Add current page for pagination
+      shuffle: true,
+      currentPage: 0,
       nowPlayingMessage: null,
     };
+
     queue.set(message.guild.id, newQueue);
+
     try {
       newQueue.connection = joinVoiceChannel({
         channelId: voiceChannel.id,
