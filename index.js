@@ -72,27 +72,63 @@ client.on("interactionCreate", async (interaction) => {
 
   const serverQueue = queue.get(interaction.guildId);
 
-  // Defer the reply to prevent the interaction from failing
-  await interaction.deferUpdate();
+  // We are now deferring inside the handlers that need it.
+  // await interaction.deferUpdate(); // REMOVE THIS LINE
 
   switch (interaction.customId) {
     case "skip":
+      await interaction.deferUpdate(); // Acknowledge the interaction immediately
       handleSkip(interaction, serverQueue);
       break;
     case "stop":
+      // handleStop sends its own message, so no deferUpdate is needed.
       handleStop(interaction, serverQueue);
       break;
     case "queue":
+      // handleQueue sends its own message, so no deferUpdate is needed.
       handleQueue(interaction, serverQueue);
       break;
     case "shuffle":
+      await interaction.deferUpdate();
       handleShuffle(interaction, serverQueue);
       break;
     case "loop":
-      handleLoop(interaction, serverQueue);
+      await handleLoop(interaction, serverQueue);
       break;
   }
 });
+
+function createButtonRow(serverQueue) {
+  const isLooping = serverQueue?.loop || false;
+
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("skip")
+      .setLabel("Skip")
+      .setStyle(ButtonStyle.Primary)
+      .setEmoji("⏭️"),
+    new ButtonBuilder()
+      .setCustomId("stop")
+      .setLabel("Stop")
+      .setStyle(ButtonStyle.Danger)
+      .setEmoji("⏹️"),
+    new ButtonBuilder()
+      .setCustomId("queue")
+      .setLabel("Queue")
+      .setStyle(ButtonStyle.Secondary)
+      .setEmoji("📜"),
+    new ButtonBuilder()
+      .setCustomId("shuffle")
+      .setLabel("Shuffle")
+      .setStyle(ButtonStyle.Secondary)
+      .setEmoji("🔀"),
+    new ButtonBuilder()
+      .setCustomId("loop")
+      .setLabel(isLooping ? "Loop: On" : "Loop: Off")
+      .setStyle(isLooping ? ButtonStyle.Success : ButtonStyle.Secondary) // Green when on, Gray when off
+      .setEmoji("🔁")
+  );
+}
 
 async function handlePlay(message, args, serverQueue) {
   const voiceChannel = message.member.voice.channel;
@@ -194,16 +230,10 @@ async function handlePlay(message, args, serverQueue) {
 
 function handleSkip(source, serverQueue) {
   const user = source.member;
-  if (!user.voice.channel) {
-    return source.channel.send("You have to be in a voice channel to skip!");
-  }
-  if (!serverQueue) {
-    return source.channel.send("There is no song that I could skip!");
+  if (!user.voice.channel || !serverQueue) {
+    return;
   }
   serverQueue.player.stop();
-  source.channel
-    .send("⏭️ Skipped the song!")
-    .then((msg) => setTimeout(() => msg.delete(), 5000));
 }
 
 function handleStop(source, serverQueue) {
@@ -283,13 +313,9 @@ function handleQueue(source, serverQueue) {
 
 function handleShuffle(source, serverQueue) {
   const user = source.member;
-  if (!user.voice.channel) {
-    return source.channel.send("You have to be in a voice channel to shuffle!");
+  if (!user.voice.channel || !serverQueue || serverQueue.songs.length < 2) {
+    return; // Fails silently
   }
-  if (!serverQueue || serverQueue.songs.length < 2) {
-    return source.channel.send("There aren't enough songs to shuffle.");
-  }
-
   const nowPlaying = serverQueue.songs.shift();
   for (let i = serverQueue.songs.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -299,25 +325,29 @@ function handleShuffle(source, serverQueue) {
     ];
   }
   serverQueue.songs.unshift(nowPlaying);
-
-  source.channel
-    .send("🔀 The queue has been shuffled!")
-    .then((msg) => setTimeout(() => msg.delete(), 5000));
+  // No message is sent, but the user can verify by checking the queue.
 }
 
-function handleLoop(source, serverQueue) {
-  const user = source.member;
-  if (!user.voice.channel) {
-    return source.channel.send("You have to be in a voice channel to loop!");
-  }
-  if (!serverQueue) {
-    return source.channel.send("There is no queue to loop.");
+// MODIFIED - Updates the buttons instead of sending a message
+async function handleLoop(interaction, serverQueue) {
+  const user = interaction.member;
+  if (!user.voice.channel || !serverQueue) {
+    return interaction.reply({
+      content: "You must be in a voice channel to use this!",
+      ephemeral: true,
+    });
   }
 
+  // Acknowledge the interaction
+  await interaction.deferUpdate();
+
   serverQueue.loop = !serverQueue.loop;
-  source.channel
-    .send(`🔁 Looping is now **${serverQueue.loop ? "ON" : "OFF"}**`)
-    .then((msg) => setTimeout(() => msg.delete(), 5000));
+
+  // Update the message with the new button state
+  const row = createButtonRow(serverQueue);
+  if (serverQueue.nowPlayingMessage) {
+    await serverQueue.nowPlayingMessage.edit({ components: [row] });
+  }
 }
 
 async function playSong(guildId, song) {
@@ -329,7 +359,6 @@ async function playSong(guildId, song) {
     setTimeout(() => {
       const currentQueue = queue.get(guildId);
       if (currentQueue) {
-        // Delete the "Now Playing" message when queue ends
         if (currentQueue.nowPlayingMessage) {
           currentQueue.nowPlayingMessage.delete().catch(console.error);
         }
@@ -367,34 +396,7 @@ async function playSong(guildId, song) {
     }
   });
 
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId("skip")
-      .setLabel("Skip")
-      .setStyle(ButtonStyle.Primary)
-      .setEmoji("⏭️"),
-    new ButtonBuilder()
-      .setCustomId("stop")
-      .setLabel("Stop")
-      .setStyle(ButtonStyle.Danger)
-      .setEmoji("⏹️"),
-    new ButtonBuilder()
-      .setCustomId("queue")
-      .setLabel("Queue")
-      .setStyle(ButtonStyle.Secondary)
-      .setEmoji("📜"),
-    new ButtonBuilder()
-      .setCustomId("shuffle")
-      .setLabel("Shuffle")
-      .setStyle(ButtonStyle.Secondary)
-      .setEmoji("🔀"),
-    new ButtonBuilder()
-      .setCustomId("loop")
-      .setLabel("Loop")
-      .setStyle(ButtonStyle.Success)
-      .setEmoji("🔁")
-  );
-
+  const row = createButtonRow(serverQueue);
   const messagePayload = {
     content: `🎶 Now playing: **${song.title}** (Requested by: *${song.requestedBy}*)`,
     components: [row],
