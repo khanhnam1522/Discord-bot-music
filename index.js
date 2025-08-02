@@ -390,8 +390,18 @@ async function handlePlay(message, args, serverQueue) {
 }
 
 function handleSkip(source, serverQueue) {
-  if (!source.member.voice.channel || !serverQueue) return;
-  serverQueue.player.stop();
+  if (!source.member.voice.channel || !serverQueue) {
+    return;
+  }
+
+  if (serverQueue.songs.length < 2) {
+    return;
+  }
+
+  serverQueue.songs.push(serverQueue.songs.shift());
+
+  const guildId = source.guild?.id || source.guildId;
+  playSong(guildId, serverQueue.songs[0]);
 }
 
 function handleStop(source, serverQueue) {
