@@ -54,6 +54,12 @@ client.on("messageCreate", async (message) => {
     case "queue":
       handleQueue(message, serverQueue);
       break;
+    case "shuffle":
+      handleShuffle(message, serverQueue);
+      break;
+    case "loop":
+      handleLoop(message, serverQueue);
+      break;
   }
 });
 
@@ -128,6 +134,7 @@ async function handlePlay(message, args, serverQueue) {
       songs: songs,
       player: createAudioPlayer({ behaviors: { noSubscriber: "stop" } }),
       playing: true,
+      loop: false, // Add loop state
     };
     queue.set(message.guild.id, newQueue);
 
@@ -169,6 +176,8 @@ function handleStop(message, serverQueue) {
   if (!serverQueue) {
     return message.channel.send("There is nothing to stop!");
   }
+  serverQueue.songs = [];
+  serverQueue.loop = false;
   serverQueue.connection.destroy();
   queue.delete(message.guild.id);
   message.channel.send("⏹️ Stopped the music and cleared the queue.");
@@ -186,6 +195,48 @@ function handleQueue(message, serverQueue) {
     queueMessage += `...and ${serverQueue.songs.length - 11} more.`;
   }
   message.channel.send(queueMessage);
+}
+
+function handleShuffle(message, serverQueue) {
+  if (!message.member.voice.channel) {
+    return message.channel.send(
+      "You have to be in a voice channel to shuffle the queue!"
+    );
+  }
+  if (!serverQueue || serverQueue.songs.length < 2) {
+    return message.channel.send(
+      "There aren't enough songs in the queue to shuffle."
+    );
+  }
+
+  // Keep the current song playing, but shuffle the rest
+  const nowPlaying = serverQueue.songs.shift();
+  for (let i = serverQueue.songs.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [serverQueue.songs[i], serverQueue.songs[j]] = [
+      serverQueue.songs[j],
+      serverQueue.songs[i],
+    ];
+  }
+  serverQueue.songs.unshift(nowPlaying);
+
+  message.channel.send("🔀 The queue has been shuffled!");
+}
+
+function handleLoop(message, serverQueue) {
+  if (!message.member.voice.channel) {
+    return message.channel.send(
+      "You have to be in a voice channel to change the loop settings!"
+    );
+  }
+  if (!serverQueue) {
+    return message.channel.send("There is no queue to loop.");
+  }
+
+  serverQueue.loop = !serverQueue.loop;
+  message.channel.send(
+    `🔁 Looping is now **${serverQueue.loop ? "ON" : "OFF"}**.`
+  );
 }
 
 async function playSong(guildId, song) {
@@ -230,7 +281,10 @@ async function playSong(guildId, song) {
   serverQueue.player.once(AudioPlayerStatus.Idle, () => {
     const currentQueue = queue.get(guildId);
     if (currentQueue) {
-      currentQueue.songs.shift();
+      const songThatFinished = currentQueue.songs.shift();
+      if (currentQueue.loop) {
+        currentQueue.songs.push(songThatFinished);
+      }
       playSong(guildId, currentQueue.songs[0]);
     }
   });
