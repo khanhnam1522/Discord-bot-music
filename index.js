@@ -190,7 +190,15 @@ async function handlePlay(message, args, serverQueue) {
       "There was an error processing your request."
     );
   }
+
   if (!serverQueue) {
+    if (songs.length > 1) {
+      for (let i = songs.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [songs[i], songs[j]] = [songs[j], songs[i]];
+      }
+    }
+
     const newQueue = {
       textChannel: message.channel,
       voiceChannel: voiceChannel,
@@ -198,11 +206,13 @@ async function handlePlay(message, args, serverQueue) {
       songs: songs,
       player: createAudioPlayer({ behaviors: { noSubscriber: "stop" } }),
       playing: true,
-      loop: false,
-      shuffle: false,
-      nowPlayingMessage: null, // Track the message
+      loop: true,
+      shuffle: true,
+      nowPlayingMessage: null,
     };
+
     queue.set(message.guild.id, newQueue);
+
     try {
       newQueue.connection = joinVoiceChannel({
         channelId: voiceChannel.id,
