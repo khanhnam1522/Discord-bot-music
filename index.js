@@ -70,6 +70,11 @@ client.on("messageCreate", async (message) => {
         serverQueue
       );
       break;
+    case "pause":
+    case "resume":
+    case "toggle":
+      handleTogglePlayback(message, serverQueue);
+      break;
   }
 });
 
@@ -159,6 +164,10 @@ client.on("interactionCreate", async (interaction) => {
       case "panel_next":
         handlePagination(interaction, serverQueue);
         break;
+      case "toggle_playback":
+        await interaction.deferUpdate();
+        handleTogglePlayback(interaction, serverQueue);
+        break;
     }
   }
 });
@@ -167,6 +176,7 @@ function createActionRows(serverQueue) {
   const isLooping = serverQueue?.loop || false;
   const songsPerPage = 10;
   const currentPage = serverQueue.currentPage || 0;
+  const isPaused = serverQueue.player.state.status === "paused";
 
   // --- ROW 1: Playback Controls ---
   const playbackControls = new ActionRowBuilder().addComponents(
@@ -175,6 +185,11 @@ function createActionRows(serverQueue) {
       .setLabel("Skip")
       .setStyle(ButtonStyle.Primary)
       .setEmoji("⏭️"),
+    new ButtonBuilder()
+      .setCustomId("toggle_playback")
+      .setLabel(isPaused ? "Resume" : "Pause")
+      .setStyle(ButtonStyle.Secondary)
+      .setEmoji(isPaused ? "▶️" : "⏸️"),
     new ButtonBuilder()
       .setCustomId("stop")
       .setLabel("Stop")
@@ -185,11 +200,11 @@ function createActionRows(serverQueue) {
       .setLabel("Shuffle")
       .setStyle(ButtonStyle.Secondary)
       .setEmoji("🔀"),
-    new ButtonBuilder()
-      .setCustomId("loop")
-      .setLabel(isLooping ? "Loop: On" : "Loop: Off")
-      .setStyle(isLooping ? ButtonStyle.Success : ButtonStyle.Secondary)
-      .setEmoji("🔁"),
+    // new ButtonBuilder()
+    //   .setCustomId("loop")
+    //   .setLabel(isLooping ? "Loop: On" : "Loop: Off")
+    //   .setStyle(isLooping ? ButtonStyle.Success : ButtonStyle.Secondary)
+    //   .setEmoji("🔁"),
     new ButtonBuilder()
       .setCustomId("jump_modal")
       .setLabel("Jump")
@@ -424,6 +439,24 @@ function handleStop(source, serverQueue) {
   queue.delete(source.guild.id);
 }
 
+async function handleTogglePlayback(interaction, serverQueue) {
+  if (!serverQueue) return;
+  if (!interaction.member.voice.channel) return;
+
+  const playerState = serverQueue.player.state.status;
+
+  if (playerState === "playing") {
+    serverQueue.player.pause();
+  } else if (playerState === "paused") {
+    serverQueue.player.unpause();
+  }
+
+  // Reset pagination to page 0, or keep current page as needed
+  serverQueue.currentPage = 0;
+
+  // Update the panel so button label changes accordingly
+  await updatePanel(serverQueue);
+}
 async function handleShuffle(interaction, serverQueue) {
   if (
     !interaction.member.voice.channel ||
