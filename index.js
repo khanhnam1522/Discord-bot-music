@@ -80,6 +80,7 @@ client.on("interactionCreate", async (interaction) => {
       handleSkip(interaction, serverQueue);
       break;
     case "stop":
+      await interaction.deferUpdate();
       handleStop(interaction, serverQueue);
       break;
     case "shuffle":
@@ -95,7 +96,6 @@ client.on("interactionCreate", async (interaction) => {
       break;
   }
 });
-
 // This function now creates all buttons for the main panel
 function createButtonRow(serverQueue) {
   const isLooping = serverQueue?.loop || false;
@@ -321,15 +321,23 @@ function handleSkip(source, serverQueue) {
 }
 
 function handleStop(source, serverQueue) {
-  if (!source.member.voice.channel)
-    return source.channel.send("You have to be in a voice channel to stop!");
-  if (!serverQueue) return source.channel.send("There is nothing to stop!");
+  if (!source.member.voice.channel) {
+    return source.isButton?.()
+      ? null
+      : source.channel.send("You have to be in a voice channel to stop!");
+  }
+  if (!serverQueue) {
+    return source.isButton?.()
+      ? null
+      : source.channel.send("There is nothing to stop!");
+  }
+
   if (serverQueue.nowPlayingMessage) {
     serverQueue.nowPlayingMessage.delete().catch(console.error);
   }
+
   serverQueue.connection.destroy();
   queue.delete(source.guild.id);
-  source.channel.send("⏹️ Stopped the music and cleared the queue.");
 }
 
 async function handleShuffle(interaction, serverQueue) {
