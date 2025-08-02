@@ -207,6 +207,14 @@ async function updatePanel(serverQueue) {
 }
 
 async function handlePlay(message, args, serverQueue) {
+  // If a queue exists and has songs, block the command.
+  if (serverQueue && serverQueue.songs.length > 0) {
+    return message.channel.send(
+      "A playlist is already active! Please use the `!stop` command before playing a new one."
+    );
+  }
+  // ------------------------------------
+
   const voiceChannel = message.member.voice.channel;
   if (!voiceChannel) {
     return message.channel.send(
@@ -272,46 +280,41 @@ async function handlePlay(message, args, serverQueue) {
       "There was an error processing your request."
     );
   }
-  if (!serverQueue) {
-    // --- SHUFFLE LOGIC ADDED HERE ---
-    // If more than one song was added, shuffle the array before creating the queue.
-    if (songs.length > 1) {
-      for (let i = songs.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [songs[i], songs[j]] = [songs[j], songs[i]];
-      }
+
+  // This part of the code will now only run if there was no active queue.
+  if (songs.length > 1) {
+    for (let i = songs.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [songs[i], songs[j]] = [songs[j], songs[i]];
     }
+  }
 
-    const newQueue = {
-      textChannel: message.channel,
-      voiceChannel: voiceChannel,
-      connection: null,
-      songs: songs,
-      player: createAudioPlayer({ behaviors: { noSubscriber: "stop" } }),
-      playing: true,
-      loop: true,
-      shuffle: true,
-      currentPage: 0,
-      nowPlayingMessage: null,
-    };
+  const newQueue = {
+    textChannel: message.channel,
+    voiceChannel: voiceChannel,
+    connection: null,
+    songs: songs,
+    player: createAudioPlayer({ behaviors: { noSubscriber: "stop" } }),
+    playing: true,
+    loop: true,
+    shuffle: true,
+    currentPage: 0,
+    nowPlayingMessage: null,
+  };
 
-    queue.set(message.guild.id, newQueue);
+  queue.set(message.guild.id, newQueue);
 
-    try {
-      newQueue.connection = joinVoiceChannel({
-        channelId: voiceChannel.id,
-        guildId: message.guild.id,
-        adapterCreator: message.guild.voiceAdapterCreator,
-      });
-      playSong(message.guild.id, newQueue.songs[0]);
-    } catch (err) {
-      console.log(err);
-      queue.delete(message.guild.id);
-      return message.channel.send(err.message);
-    }
-  } else {
-    serverQueue.songs.push(...songs);
-    await updatePanel(serverQueue); // Update panel when songs are added
+  try {
+    newQueue.connection = joinVoiceChannel({
+      channelId: voiceChannel.id,
+      guildId: message.guild.id,
+      adapterCreator: message.guild.voiceAdapterCreator,
+    });
+    playSong(message.guild.id, newQueue.songs[0]);
+  } catch (err) {
+    console.log(err);
+    queue.delete(message.guild.id);
+    return message.channel.send(err.message);
   }
 }
 
