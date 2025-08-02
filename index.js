@@ -3,6 +3,9 @@ const {
   Client,
   GatewayIntentBits,
   PermissionFlagsBits,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
 } = require("discord.js");
 const {
   joinVoiceChannel,
@@ -26,7 +29,7 @@ const queue = new Map();
 
 client.on("ready", () => {
   console.log(`Logged in as ${client.user.tag}!`);
-  client.user.setActivity("music with !play", { type: "PLAYING" });
+  client.user.setActivity("music with buttons!", { type: "PLAYING" });
 });
 
 client.on("messageCreate", async (message) => {
@@ -63,6 +66,34 @@ client.on("messageCreate", async (message) => {
   }
 });
 
+// Listener for button interactions
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isButton()) return;
+
+  const serverQueue = queue.get(interaction.guildId);
+
+  // Defer the reply to prevent the interaction from failing
+  await interaction.deferUpdate();
+
+  switch (interaction.customId) {
+    case "skip":
+      handleSkip(interaction, serverQueue);
+      break;
+    case "stop":
+      handleStop(interaction, serverQueue);
+      break;
+    case "queue":
+      handleQueue(interaction, serverQueue);
+      break;
+    case "shuffle":
+      handleShuffle(interaction, serverQueue);
+      break;
+    case "loop":
+      handleLoop(interaction, serverQueue);
+      break;
+  }
+});
+
 async function handlePlay(message, args, serverQueue) {
   const voiceChannel = message.member.voice.channel;
   if (!voiceChannel) {
@@ -70,7 +101,6 @@ async function handlePlay(message, args, serverQueue) {
       "You need to be in a voice channel to play music!"
     );
   }
-
   const permissions = voiceChannel.permissionsFor(message.client.user);
   if (
     !permissions.has(PermissionFlagsBits.Connect) ||
@@ -80,23 +110,24 @@ async function handlePlay(message, args, serverQueue) {
       "I need permissions to join and speak in your voice channel!"
     );
   }
-
   const url = args.join(" ");
   if (!url) {
     return message.channel.send("Please provide a YouTube URL or search term!");
   }
-
   const searchingMessage = await message.channel.send(
     `🔎 Searching for \`${url}\`...`
   );
   let songs = [];
-
   try {
     const validation = await play.validate(url);
     if (validation === "yt_playlist") {
       const playlist = await play.playlist_info(url, { incomplete: true });
       const videos = await playlist.all_videos();
-      songs = videos.map((video) => ({ title: video.title, url: video.url }));
+      songs = videos.map((video) => ({
+        title: video.title,
+        url: video.url,
+        requestedBy: message.author.tag,
+      }));
       await searchingMessage.edit(
         `✅ Added **${songs.length}** songs to the queue!`
       );
@@ -114,7 +145,11 @@ async function handlePlay(message, args, serverQueue) {
         validation === "yt_video"
           ? searchResults[0].video_details
           : searchResults[0];
-      songs.push({ title: video.title, url: video.url });
+      songs.push({
+        title: video.title,
+        url: video.url,
+        requestedBy: message.author.tag,
+      });
       await searchingMessage.edit(
         `✅ Added **${songs[0].title}** to the queue!`
       );
@@ -125,7 +160,6 @@ async function handlePlay(message, args, serverQueue) {
       "There was an error processing your request."
     );
   }
-
   if (!serverQueue) {
     const newQueue = {
       textChannel: message.channel,
@@ -134,10 +168,10 @@ async function handlePlay(message, args, serverQueue) {
       songs: songs,
       player: createAudioPlayer({ behaviors: { noSubscriber: "stop" } }),
       playing: true,
-      loop: false, // Add loop state
+      loop: false,
+      nowPlayingMessage: null, // Track the message
     };
     queue.set(message.guild.id, newQueue);
-
     try {
       newQueue.connection = joinVoiceChannel({
         channelId: voiceChannel.id,
@@ -158,58 +192,104 @@ async function handlePlay(message, args, serverQueue) {
   }
 }
 
-function handleSkip(message, serverQueue) {
-  if (!message.member.voice.channel) {
-    return message.channel.send("You have to be in a voice channel to skip!");
+function handleSkip(source, serverQueue) {
+  const user = source.member;
+  if (!user.voice.channel) {
+    return source.channel.send("You have to be in a voice channel to skip!");
   }
   if (!serverQueue) {
-    return message.channel.send("There is no song that I could skip!");
+    return source.channel.send("There is no song that I could skip!");
   }
   serverQueue.player.stop();
-  message.channel.send("⏭️ Skipped the song!");
+  source.channel
+    .send("⏭️ Skipped the song!")
+    .then((msg) => setTimeout(() => msg.delete(), 5000));
 }
 
-function handleStop(message, serverQueue) {
-  if (!message.member.voice.channel) {
-    return message.channel.send("You have to be in a voice channel to stop!");
+function handleStop(source, serverQueue) {
+  const user = source.member;
+  if (!user.voice.channel) {
+    return source.channel.send("You have to be in a voice channel to stop!");
   }
   if (!serverQueue) {
-    return message.channel.send("There is nothing to stop!");
+    return source.channel.send("There is nothing to stop!");
   }
+
+  // Delete the "Now Playing" message
+  if (serverQueue.nowPlayingMessage) {
+    serverQueue.nowPlayingMessage.delete().catch(console.error);
+  }
+
   serverQueue.songs = [];
   serverQueue.loop = false;
   serverQueue.connection.destroy();
-  queue.delete(message.guild.id);
-  message.channel.send("⏹️ Stopped the music and cleared the queue.");
+  queue.delete(source.guild.id);
+  source.channel.send("⏹️ Stopped the music and cleared the queue.");
 }
 
-function handleQueue(message, serverQueue) {
+function handleQueue(source, serverQueue) {
   if (!serverQueue || serverQueue.songs.length === 0) {
-    return message.channel.send("The queue is currently empty!");
+    return source.channel.send("The queue is currently empty!");
   }
-  let queueMessage = `**Now Playing:** ${serverQueue.songs[0].title}\n\n**Up Next:**\n`;
-  serverQueue.songs.slice(1, 11).forEach((song, i) => {
-    queueMessage += `${i + 1}. ${song.title}\n`;
-  });
+  // Use an embed for a cleaner look
+  const { EmbedBuilder } = require("discord.js");
+  const queueEmbed = new EmbedBuilder()
+    .setColor(0x0099ff)
+    .setTitle("Music Queue")
+    .setDescription(
+      `**Now Playing:** [${serverQueue.songs[0].title}](${serverQueue.songs[0].url})\n*Requested by: ${serverQueue.songs[0].requestedBy}*`
+    )
+    .setTimestamp();
+
+  const nextSongs = serverQueue.songs
+    .slice(1, 11)
+    .map((song, i) => {
+      // We shorten this line to save characters
+      return `${i + 1}. ${song.title}`;
+    })
+    .join("\n");
+
+  if (nextSongs) {
+    // FIX: Truncate the field value if it exceeds the 1024 character limit
+    const fieldValue =
+      nextSongs.length > 1024
+        ? nextSongs.substring(0, 1021) + "..."
+        : nextSongs;
+    queueEmbed.addFields({ name: "Up Next", value: fieldValue });
+  }
+
   if (serverQueue.songs.length > 11) {
-    queueMessage += `...and ${serverQueue.songs.length - 11} more.`;
+    queueEmbed.setFooter({
+      text: `...and ${serverQueue.songs.length - 11} more.`,
+    });
   }
-  message.channel.send(queueMessage);
+
+  // Interactions need a reply, messages can just send
+  if (source.isButton()) {
+    source.user.send({ embeds: [queueEmbed] }).catch(() => {
+      source.channel
+        .send(
+          "I couldn't DM you the queue! Please check your privacy settings."
+        )
+        .then((msg) => setTimeout(() => msg.delete(), 10000));
+    });
+    source.channel
+      .send("I've sent you a DM with the queue!")
+      .then((msg) => setTimeout(() => msg.delete(), 5000));
+  } else {
+    source.channel.send({ embeds: [queueEmbed] });
+  }
 }
 
-function handleShuffle(message, serverQueue) {
-  if (!message.member.voice.channel) {
-    return message.channel.send(
-      "You have to be in a voice channel to shuffle the queue!"
-    );
+function handleShuffle(source, serverQueue) {
+  const user = source.member;
+  if (!user.voice.channel) {
+    return source.channel.send("You have to be in a voice channel to shuffle!");
   }
   if (!serverQueue || serverQueue.songs.length < 2) {
-    return message.channel.send(
-      "There aren't enough songs in the queue to shuffle."
-    );
+    return source.channel.send("There aren't enough songs to shuffle.");
   }
 
-  // Keep the current song playing, but shuffle the rest
   const nowPlaying = serverQueue.songs.shift();
   for (let i = serverQueue.songs.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -220,23 +300,24 @@ function handleShuffle(message, serverQueue) {
   }
   serverQueue.songs.unshift(nowPlaying);
 
-  message.channel.send("🔀 The queue has been shuffled!");
+  source.channel
+    .send("🔀 The queue has been shuffled!")
+    .then((msg) => setTimeout(() => msg.delete(), 5000));
 }
 
-function handleLoop(message, serverQueue) {
-  if (!message.member.voice.channel) {
-    return message.channel.send(
-      "You have to be in a voice channel to change the loop settings!"
-    );
+function handleLoop(source, serverQueue) {
+  const user = source.member;
+  if (!user.voice.channel) {
+    return source.channel.send("You have to be in a voice channel to loop!");
   }
   if (!serverQueue) {
-    return message.channel.send("There is no queue to loop.");
+    return source.channel.send("There is no queue to loop.");
   }
 
   serverQueue.loop = !serverQueue.loop;
-  message.channel.send(
-    `🔁 Looping is now **${serverQueue.loop ? "ON" : "OFF"}**.`
-  );
+  source.channel
+    .send(`🔁 Looping is now **${serverQueue.loop ? "ON" : "OFF"}**`)
+    .then((msg) => setTimeout(() => msg.delete(), 5000));
 }
 
 async function playSong(guildId, song) {
@@ -244,21 +325,20 @@ async function playSong(guildId, song) {
   if (!serverQueue) {
     return;
   }
-
   if (!song) {
     setTimeout(() => {
       const currentQueue = queue.get(guildId);
-      if (
-        currentQueue &&
-        currentQueue.player.state.status === AudioPlayerStatus.Idle
-      ) {
+      if (currentQueue) {
+        // Delete the "Now Playing" message when queue ends
+        if (currentQueue.nowPlayingMessage) {
+          currentQueue.nowPlayingMessage.delete().catch(console.error);
+        }
         currentQueue.connection.destroy();
         queue.delete(guildId);
       }
-    }, 300000); // 5-minute timeout
+    }, 300000);
     return;
   }
-
   let resource;
   try {
     const stream = ytdl(song.url, {
@@ -274,10 +354,8 @@ async function playSong(guildId, song) {
     playSong(guildId, serverQueue.songs[0]);
     return;
   }
-
   serverQueue.player.play(resource);
   serverQueue.connection.subscribe(serverQueue.player);
-
   serverQueue.player.once(AudioPlayerStatus.Idle, () => {
     const currentQueue = queue.get(guildId);
     if (currentQueue) {
@@ -289,7 +367,53 @@ async function playSong(guildId, song) {
     }
   });
 
-  await serverQueue.textChannel.send(`🎶 Now playing: **${song.title}**`);
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("skip")
+      .setLabel("Skip")
+      .setStyle(ButtonStyle.Primary)
+      .setEmoji("⏭️"),
+    new ButtonBuilder()
+      .setCustomId("stop")
+      .setLabel("Stop")
+      .setStyle(ButtonStyle.Danger)
+      .setEmoji("⏹️"),
+    new ButtonBuilder()
+      .setCustomId("queue")
+      .setLabel("Queue")
+      .setStyle(ButtonStyle.Secondary)
+      .setEmoji("📜"),
+    new ButtonBuilder()
+      .setCustomId("shuffle")
+      .setLabel("Shuffle")
+      .setStyle(ButtonStyle.Secondary)
+      .setEmoji("🔀"),
+    new ButtonBuilder()
+      .setCustomId("loop")
+      .setLabel("Loop")
+      .setStyle(ButtonStyle.Success)
+      .setEmoji("🔁")
+  );
+
+  const messagePayload = {
+    content: `🎶 Now playing: **${song.title}** (Requested by: *${song.requestedBy}*)`,
+    components: [row],
+  };
+
+  try {
+    if (serverQueue.nowPlayingMessage) {
+      await serverQueue.nowPlayingMessage.edit(messagePayload);
+    } else {
+      serverQueue.nowPlayingMessage = await serverQueue.textChannel.send(
+        messagePayload
+      );
+    }
+  } catch (error) {
+    console.error("Error updating 'Now Playing' message:", error);
+    serverQueue.nowPlayingMessage = await serverQueue.textChannel.send(
+      messagePayload
+    );
+  }
 }
 
 client.login(process.env.DISCORD_TOKEN);
