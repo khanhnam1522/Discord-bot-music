@@ -14,36 +14,45 @@ function createActionRows(serverQueue) {
       ? Math.ceil(serverQueue.songs.length / songsPerPage)
       : 1;
 
-  // Playback Controls
+  const hasMultipleSongs = serverQueue.songs.length > 1;
+
+  // --- ROW 1: Playback Controls ---
   const playbackControls = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId("skip")
       .setLabel("Skip")
       .setStyle(ButtonStyle.Primary)
-      .setEmoji("⏭️"),
+      .setEmoji("⏭️")
+      .setDisabled(!hasMultipleSongs), // Disable if there's only one song
+
     new ButtonBuilder()
       .setCustomId("toggle_playback")
       .setLabel(isPaused ? "Resume" : "Pause")
       .setStyle(ButtonStyle.Secondary)
       .setEmoji(isPaused ? "▶️" : "⏸️"),
+
     new ButtonBuilder()
       .setCustomId("stop")
       .setLabel("Stop")
       .setStyle(ButtonStyle.Danger)
       .setEmoji("⏹️"),
+
     new ButtonBuilder()
       .setCustomId("shuffle")
       .setLabel("Shuffle")
       .setStyle(ButtonStyle.Secondary)
-      .setEmoji("🔀"),
+      .setEmoji("🔀")
+      .setDisabled(!hasMultipleSongs),
+
     new ButtonBuilder()
       .setCustomId("jump_modal")
       .setLabel("Jump")
       .setStyle(ButtonStyle.Secondary)
       .setEmoji("🚀")
+      .setDisabled(!hasMultipleSongs)
   );
 
-  // Pagination Controls
+  // --- ROW 2: Pagination Controls ---
   const paginationControls = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId("panel_prev")
@@ -51,6 +60,7 @@ function createActionRows(serverQueue) {
       .setStyle(ButtonStyle.Primary)
       .setEmoji("◀️")
       .setDisabled(currentPage === 0),
+
     new ButtonBuilder()
       .setCustomId("panel_next")
       .setLabel("Next")
@@ -58,6 +68,7 @@ function createActionRows(serverQueue) {
       .setEmoji("▶️")
       .setDisabled(currentPage >= totalPages - 1)
   );
+
   return [playbackControls, paginationControls];
 }
 
