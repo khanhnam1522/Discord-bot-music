@@ -6,6 +6,7 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  EmbedBuilder,
 } = require("discord.js");
 const {
   joinVoiceChannel,
@@ -36,7 +37,6 @@ client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.content.startsWith(process.env.PREFIX)) {
     return;
   }
-
   const args = message.content
     .slice(process.env.PREFIX.length)
     .trim()
@@ -44,6 +44,7 @@ client.on("messageCreate", async (message) => {
   const command = args.shift().toLowerCase();
   const serverQueue = queue.get(message.guild.id);
 
+  // The 'queue' command is removed as it's now part of the main panel
   switch (command) {
     case "play":
       await handlePlay(message, args, serverQueue);
@@ -54,19 +55,21 @@ client.on("messageCreate", async (message) => {
     case "stop":
       handleStop(message, serverQueue);
       break;
-    case "queue":
-      handleQueue(message, serverQueue);
-      break;
     case "shuffle":
-      handleShuffle(message, serverQueue);
+      handleShuffle(
+        { member: message.member, channel: message.channel },
+        serverQueue
+      );
       break;
     case "loop":
-      handleLoop(message, serverQueue);
+      await handleLoop(
+        { member: message.member, isButton: () => false },
+        serverQueue
+      );
       break;
   }
 });
 
-// Listener for button interactions
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isButton()) return;
   const serverQueue = queue.get(interaction.guildId);
@@ -79,23 +82,31 @@ client.on("interactionCreate", async (interaction) => {
     case "stop":
       handleStop(interaction, serverQueue);
       break;
-    case "queue":
-      handleQueue(interaction, serverQueue);
-      break;
     case "shuffle":
+      await interaction.deferUpdate();
       await handleShuffle(interaction, serverQueue);
       break;
     case "loop":
       await handleLoop(interaction, serverQueue);
       break;
+    case "panel_prev":
+    case "panel_next":
+      handlePagination(interaction, serverQueue);
+      break;
   }
 });
 
+// This function now creates all buttons for the main panel
 function createButtonRow(serverQueue) {
   const isLooping = serverQueue?.loop || false;
-  const isShuffling = serverQueue?.shuffle || false; // Check shuffle state
+  const songsPerPage = 10;
+  // We need to check if songs exist before calculating totalPages
+  const totalPages = serverQueue?.songs?.length
+    ? Math.ceil(serverQueue.songs.length / songsPerPage)
+    : 1;
 
-  return new ActionRowBuilder().addComponents(
+  // First row for main controls
+  const playbackControls = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId("skip")
       .setLabel("Skip")
@@ -107,14 +118,9 @@ function createButtonRow(serverQueue) {
       .setStyle(ButtonStyle.Danger)
       .setEmoji("⏹️"),
     new ButtonBuilder()
-      .setCustomId("queue")
-      .setLabel("Queue")
-      .setStyle(ButtonStyle.Secondary)
-      .setEmoji("📜"),
-    new ButtonBuilder()
       .setCustomId("shuffle")
-      .setLabel(isShuffling ? "Shuffle: On" : "Shuffle: Off") // Update Label
-      .setStyle(isShuffling ? ButtonStyle.Success : ButtonStyle.Secondary) // Update Style
+      .setLabel("Shuffle")
+      .setStyle(ButtonStyle.Secondary)
       .setEmoji("🔀"),
     new ButtonBuilder()
       .setCustomId("loop")
@@ -122,6 +128,82 @@ function createButtonRow(serverQueue) {
       .setStyle(isLooping ? ButtonStyle.Success : ButtonStyle.Secondary)
       .setEmoji("🔁")
   );
+
+  // Second row for pagination
+  const paginationControls = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("panel_prev")
+      .setLabel("Back")
+      .setStyle(ButtonStyle.Primary)
+      .setEmoji("◀️")
+      .setDisabled(serverQueue.currentPage === 0),
+    new ButtonBuilder()
+      .setCustomId("panel_next")
+      .setLabel("Next")
+      .setStyle(ButtonStyle.Primary)
+      .setEmoji("▶️")
+      .setDisabled(serverQueue.currentPage >= totalPages - 1)
+  );
+
+  // Return an array of both rows
+  return [playbackControls, paginationControls];
+}
+
+function generatePanelPayload(serverQueue) {
+  if (!serverQueue || serverQueue.songs.length === 0) {
+    return { content: "The queue is empty.", embeds: [], components: [] };
+  }
+
+  const songsPerPage = 10;
+  const totalPages = Math.ceil(serverQueue.songs.length / songsPerPage);
+  const currentPage = serverQueue.currentPage || 0;
+  const start = currentPage * songsPerPage;
+  const end = start + songsPerPage;
+
+  const upcomingSongs = serverQueue.songs.slice(1);
+  const pageSongs = upcomingSongs.slice(start, end);
+
+  const embed = new EmbedBuilder()
+    .setColor(0x0099ff)
+    .setTitle("Now Playing")
+    .setDescription(
+      `**[${serverQueue.songs[0].title}](${serverQueue.songs[0].url})**\n*Requested by: ${serverQueue.songs[0].requestedBy}*`
+    )
+    .setFooter({
+      text: `Page ${currentPage + 1} of ${totalPages} | ${
+        serverQueue.songs.length
+      } songs total`,
+    });
+
+  if (pageSongs.length > 0) {
+    let description = pageSongs
+      .map((song, index) => `**${start + index + 1}.** ${song.title}`)
+      .join("\n");
+
+    // --- FIX: Add the length check and truncate if necessary ---
+    if (description.length > 1024) {
+      description = description.substring(0, 1021) + "...";
+    }
+    // -----------------------------------------------------------
+
+    embed.addFields({ name: "Up Next", value: description });
+  } else {
+    embed.addFields({ name: "Up Next", value: "No more songs in the queue." });
+  }
+
+  const components = createButtonRow(serverQueue);
+  return { embeds: [embed], components };
+}
+
+// This new helper function updates the panel
+async function updatePanel(serverQueue) {
+  if (!serverQueue.nowPlayingMessage) return;
+  const payload = generatePanelPayload(serverQueue);
+  try {
+    await serverQueue.nowPlayingMessage.edit(payload);
+  } catch (error) {
+    console.error("Failed to edit panel:", error);
+  }
 }
 
 async function handlePlay(message, args, serverQueue) {
@@ -190,15 +272,7 @@ async function handlePlay(message, args, serverQueue) {
       "There was an error processing your request."
     );
   }
-
   if (!serverQueue) {
-    if (songs.length > 1) {
-      for (let i = songs.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [songs[i], songs[j]] = [songs[j], songs[i]];
-      }
-    }
-
     const newQueue = {
       textChannel: message.channel,
       voiceChannel: voiceChannel,
@@ -207,12 +281,11 @@ async function handlePlay(message, args, serverQueue) {
       player: createAudioPlayer({ behaviors: { noSubscriber: "stop" } }),
       playing: true,
       loop: true,
-      shuffle: true,
+      shuffle: false, // Shuffle is now a one-time action, not a mode
+      currentPage: 0, // Add current page for pagination
       nowPlayingMessage: null,
     };
-
     queue.set(message.guild.id, newQueue);
-
     try {
       newQueue.connection = joinVoiceChannel({
         channelId: voiceChannel.id,
@@ -227,163 +300,95 @@ async function handlePlay(message, args, serverQueue) {
     }
   } else {
     serverQueue.songs.push(...songs);
-    if (serverQueue.player.state.status === AudioPlayerStatus.Idle) {
-      playSong(message.guild.id, serverQueue.songs[0]);
-    }
+    await updatePanel(serverQueue); // Update panel when songs are added
   }
 }
 
 function handleSkip(source, serverQueue) {
-  const user = source.member;
-  if (!user.voice.channel || !serverQueue) {
-    return;
-  }
+  if (!source.member.voice.channel || !serverQueue) return;
   serverQueue.player.stop();
 }
 
 function handleStop(source, serverQueue) {
-  const user = source.member;
-  if (!user.voice.channel) {
+  if (!source.member.voice.channel)
     return source.channel.send("You have to be in a voice channel to stop!");
-  }
-  if (!serverQueue) {
-    return source.channel.send("There is nothing to stop!");
-  }
-
-  // Delete the "Now Playing" message
+  if (!serverQueue) return source.channel.send("There is nothing to stop!");
   if (serverQueue.nowPlayingMessage) {
     serverQueue.nowPlayingMessage.delete().catch(console.error);
   }
-
-  serverQueue.songs = [];
-  serverQueue.loop = false;
   serverQueue.connection.destroy();
   queue.delete(source.guild.id);
   source.channel.send("⏹️ Stopped the music and cleared the queue.");
 }
 
-function handleQueue(source, serverQueue) {
-  if (!serverQueue || serverQueue.songs.length === 0) {
-    return source.channel.send("The queue is currently empty!");
-  }
-  // Use an embed for a cleaner look
-  const { EmbedBuilder } = require("discord.js");
-  const queueEmbed = new EmbedBuilder()
-    .setColor(0x0099ff)
-    .setTitle("Music Queue")
-    .setDescription(
-      `**Now Playing:** [${serverQueue.songs[0].title}](${serverQueue.songs[0].url})\n*Requested by: ${serverQueue.songs[0].requestedBy}*`
-    )
-    .setTimestamp();
-
-  const nextSongs = serverQueue.songs
-    .slice(1, 11)
-    .map((song, i) => {
-      // We shorten this line to save characters
-      return `${i + 1}. ${song.title}`;
-    })
-    .join("\n");
-
-  if (nextSongs) {
-    // FIX: Truncate the field value if it exceeds the 1024 character limit
-    const fieldValue =
-      nextSongs.length > 1024
-        ? nextSongs.substring(0, 1021) + "..."
-        : nextSongs;
-    queueEmbed.addFields({ name: "Up Next", value: fieldValue });
-  }
-
-  if (serverQueue.songs.length > 11) {
-    queueEmbed.setFooter({
-      text: `...and ${serverQueue.songs.length - 11} more.`,
-    });
-  }
-
-  // Interactions need a reply, messages can just send
-  if (source.isButton()) {
-    source.user.send({ embeds: [queueEmbed] }).catch(() => {
-      source.channel
-        .send(
-          "I couldn't DM you the queue! Please check your privacy settings."
-        )
-        .then((msg) => setTimeout(() => msg.delete(), 10000));
-    });
-    source.channel
-      .send("I've sent you a DM with the queue!")
-      .then((msg) => setTimeout(() => msg.delete(), 5000));
-  } else {
-    source.channel.send({ embeds: [queueEmbed] });
-  }
-}
-
 async function handleShuffle(interaction, serverQueue) {
-  const user = interaction.member;
-  if (!user.voice.channel) {
-    return interaction.reply({
-      content: "You must be in a voice channel to shuffle!",
-      ephemeral: true,
-    });
-  }
-  if (!serverQueue) {
-    return interaction.reply({
-      content: "There is no queue to enable shuffle mode on.",
-      ephemeral: true,
-    });
+  if (
+    !interaction.member.voice.channel ||
+    !serverQueue ||
+    serverQueue.songs.length < 2
+  ) {
+    return;
   }
 
-  // Acknowledge the interaction
-  await interaction.deferUpdate();
-
-  // Toggle the shuffle state
-  serverQueue.shuffle = !serverQueue.shuffle;
-
-  // Update the message with the new button state
-  const row = createButtonRow(serverQueue);
-  if (serverQueue.nowPlayingMessage) {
-    await serverQueue.nowPlayingMessage.edit({ components: [row] });
+  const nowPlaying = serverQueue.songs.shift();
+  for (let i = serverQueue.songs.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [serverQueue.songs[i], serverQueue.songs[j]] = [
+      serverQueue.songs[j],
+      serverQueue.songs[i],
+    ];
   }
+  serverQueue.songs.unshift(nowPlaying);
+  serverQueue.currentPage = 0; // Reset to the first page to show the new order
+
+  // The visual feedback is the panel updating, no message needed.
+  await updatePanel(serverQueue);
 }
 
-// MODIFIED - Updates the buttons instead of sending a message
 async function handleLoop(interaction, serverQueue) {
-  const user = interaction.member;
-  if (!user.voice.channel || !serverQueue) {
-    return interaction.reply({
-      content: "You must be in a voice channel to use this!",
-      ephemeral: true,
-    });
-  }
-
-  // Acknowledge the interaction
-  await interaction.deferUpdate();
+  if (!interaction.member.voice.channel) return;
+  if (!serverQueue) return;
 
   serverQueue.loop = !serverQueue.loop;
 
-  // Update the message with the new button state
-  const row = createButtonRow(serverQueue);
-  if (serverQueue.nowPlayingMessage) {
-    await serverQueue.nowPlayingMessage.edit({ components: [row] });
+  if (interaction.isButton()) {
+    await interaction.deferUpdate();
   }
+  await updatePanel(serverQueue);
+}
+
+async function handlePagination(interaction, serverQueue) {
+  if (!serverQueue) return;
+  const songsPerPage = 10;
+  const totalPages = Math.ceil(serverQueue.songs.length / songsPerPage);
+
+  if (interaction.customId === "panel_next") {
+    if (serverQueue.currentPage < totalPages - 1) {
+      serverQueue.currentPage++;
+    }
+  } else if (interaction.customId === "panel_prev") {
+    if (serverQueue.currentPage > 0) {
+      serverQueue.currentPage--;
+    }
+  }
+  await interaction.deferUpdate();
+  await updatePanel(serverQueue);
 }
 
 async function playSong(guildId, song) {
   const serverQueue = queue.get(guildId);
-  if (!serverQueue) {
-    return;
-  }
+  if (!serverQueue) return;
+
   if (!song) {
-    setTimeout(() => {
-      const currentQueue = queue.get(guildId);
-      if (currentQueue) {
-        if (currentQueue.nowPlayingMessage) {
-          currentQueue.nowPlayingMessage.delete().catch(console.error);
-        }
-        currentQueue.connection.destroy();
-        queue.delete(guildId);
-      }
-    }, 300000);
+    if (serverQueue.nowPlayingMessage) {
+      serverQueue.nowPlayingMessage.delete().catch(console.error);
+    }
+    serverQueue.connection.destroy();
+    queue.delete(guildId);
+    serverQueue.textChannel.send("Queue finished. Leaving voice channel.");
     return;
   }
+
   let resource;
   try {
     const stream = ytdl(song.url, {
@@ -399,52 +404,35 @@ async function playSong(guildId, song) {
     playSong(guildId, serverQueue.songs[0]);
     return;
   }
+
   serverQueue.player.play(resource);
   serverQueue.connection.subscribe(serverQueue.player);
+
   serverQueue.player.once(AudioPlayerStatus.Idle, () => {
     const currentQueue = queue.get(guildId);
     if (currentQueue) {
-      // Handle loop mode
+      const songThatFinished = currentQueue.songs.shift();
       if (currentQueue.loop) {
-        currentQueue.songs.push(currentQueue.songs.shift());
-      } else {
-        currentQueue.songs.shift();
+        currentQueue.songs.push(songThatFinished);
       }
-
-      // If shuffle is on, pick a random next song and move it to the front
-      if (currentQueue.songs.length > 0 && currentQueue.shuffle) {
-        const randomIndex = Math.floor(
-          Math.random() * currentQueue.songs.length
-        );
-        // Remove the random song from its position and place it at the front
-        const nextSong = currentQueue.songs.splice(randomIndex, 1)[0];
-        currentQueue.songs.unshift(nextSong);
-      }
-
-      // Play whatever is now at the front of the queue
       playSong(guildId, currentQueue.songs[0]);
     }
   });
 
-  const row = createButtonRow(serverQueue);
-  const messagePayload = {
-    content: `🎶 Now playing: **${song.title}** (Requested by: *${song.requestedBy}*)`,
-    components: [row],
-  };
+  serverQueue.currentPage = 0; // Reset to page 1 every time a new song plays
+  const payload = generatePanelPayload(serverQueue);
 
   try {
     if (serverQueue.nowPlayingMessage) {
-      await serverQueue.nowPlayingMessage.edit(messagePayload);
+      await serverQueue.nowPlayingMessage.edit(payload);
     } else {
       serverQueue.nowPlayingMessage = await serverQueue.textChannel.send(
-        messagePayload
+        payload
       );
     }
   } catch (error) {
     console.error("Error updating 'Now Playing' message:", error);
-    serverQueue.nowPlayingMessage = await serverQueue.textChannel.send(
-      messagePayload
-    );
+    serverQueue.nowPlayingMessage = await serverQueue.textChannel.send(payload);
   }
 }
 
