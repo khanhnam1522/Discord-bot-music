@@ -1,4 +1,4 @@
-// index.js - Updated with a fallback streaming system
+// index.js - Updated to use ytdl-core and yt-search
 
 // Import necessary libraries
 require("dotenv").config();
@@ -13,9 +13,10 @@ const {
   createAudioResource,
   AudioPlayerStatus,
 } = require("@discordjs/voice");
-const play = require("play-dl");
-const ytdl = require("@distube/ytdl-core");
+const ytdl = require("@distube/ytdl-core"); // Primary streaming library
+const yts = require("yt-search"); // Library for searching YouTube
 
+// Create a new Discord client with necessary intents
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -64,52 +65,56 @@ client.on("messageCreate", async (message) => {
       );
     }
 
-    const url = args.join(" "); // Join args to support search terms with spaces
-    if (!url) {
+    const query = args.join(" ");
+    if (!query) {
       return message.channel.send(
         "Please provide a YouTube URL or search term!"
       );
     }
 
-    // Let the user know we're searching
     const searchingMessage = await message.channel.send(
-      `🔎 Searching for \`${url}\`...`
+      `🔎 Searching for \`${query}\`...`
     );
 
     let songs = [];
 
     try {
-      // Validate the URL or search term using play-dl (it's best for metadata)
-      const validation = await play.validate(url);
-
-      if (validation === "yt_playlist") {
-        const playlist = await play.playlist_info(url, { incomplete: true });
-        const videos = await playlist.all_videos();
-        songs = videos.map((video) => ({
+      // Check if the query is a YouTube playlist URL
+      if (
+        query.match(
+          /^(https?:\/\/)?(www\.)?(m\.)?(youtube\.com|youtu\.be)\/playlist\?list=([a-zA-Z0-9_-]+)/
+        )
+      ) {
+        const playlistId = query.split("list=")[1].split("&")[0];
+        const playlist = await yts({ listId: playlistId });
+        songs = playlist.videos.map((video) => ({
           title: video.title,
           url: video.url,
         }));
         await searchingMessage.edit(
-          `✅ Added **${songs.length}** songs from the playlist to the queue!`
+          `✅ Added **${songs.length}** songs from the playlist **${playlist.title}** to the queue!`
         );
-      } else if (validation === "yt_video") {
-        const videoInfo = await play.video_info(url);
+      }
+      // Check if the query is a standard YouTube video URL
+      else if (ytdl.validateURL(query)) {
+        const songInfo = await ytdl.getInfo(query);
         songs.push({
-          title: videoInfo.video_details.title,
-          url: videoInfo.video_details.url,
+          title: songInfo.videoDetails.title,
+          url: songInfo.videoDetails.video_url,
         });
         await searchingMessage.edit(
           `✅ Added **${songs[0].title}** to the queue!`
         );
-      } else {
-        // If it's not a valid URL, treat it as a search query
-        const searchResults = await play.search(url, { limit: 1 });
-        if (searchResults.length === 0) {
+      }
+      // Otherwise, treat it as a search term
+      else {
+        const { videos } = await yts(query);
+        if (!videos.length) {
           return await searchingMessage.edit(
-            `❌ Could not find any results for \`${url}\`.`
+            `❌ Could not find any results for \`${query}\`.`
           );
         }
-        const video = searchResults[0];
+        const video = videos[0];
         songs.push({
           title: video.title,
           url: video.url,
@@ -121,7 +126,7 @@ client.on("messageCreate", async (message) => {
     } catch (error) {
       console.error(error);
       return await searchingMessage.edit(
-        "There was an error processing your request. The video might be private or region-locked."
+        "There was an error processing your request."
       );
     }
 
@@ -157,7 +162,6 @@ client.on("messageCreate", async (message) => {
       }
     } else {
       serverQueue.songs = serverQueue.songs.concat(songs);
-      // If music is not currently playing, and songs were added, start playing.
       if (serverQueue.player.state.status === AudioPlayerStatus.Idle) {
         playSong(message.guild.id, serverQueue.songs[0]);
       }
@@ -225,40 +229,38 @@ async function playSong(guildId, song) {
     return;
   }
 
-  let stream;
-  let resource;
-
   try {
-    // --- Fallback Method: ytdl-core ---
-    const ytdlStream = ytdl(song.url, {
+    const stream = ytdl(song.url, {
       filter: "audioonly",
       quality: "highestaudio",
       highWaterMark: 1 << 25, // 32MB
     });
-    resource = createAudioResource(ytdlStream);
-    console.log("Successfully created stream with ytdl-core fallback.");
-  } catch (ytdlError) {
-    console.error(
-      `ytdl-core fallback also failed for ${song.url}. Reason: ${ytdlError.message}`
-    );
+
+    const resource = createAudioResource(stream);
+
+    serverQueue.player.play(resource);
+    serverQueue.connection.subscribe(serverQueue.player);
+
+    serverQueue.player.once(AudioPlayerStatus.Idle, () => {
+      // FIX: Add a guard clause to ensure the queue still exists before proceeding.
+      const currentQueue = queue.get(guildId);
+      if (!currentQueue) {
+        return;
+      }
+      currentQueue.songs.shift();
+      playSong(guildId, currentQueue.songs[0]);
+    });
+
+    await serverQueue.textChannel.send(`🎶 Now playing: **${song.title}**`);
+  } catch (error) {
+    console.error(`Error playing song: ${song.url}`);
+    console.error(error);
     serverQueue.textChannel.send(
-      `Error playing **${song.title}**. Both streaming methods failed. Skipping.`
+      `Error playing **${song.title}**. Skipping to the next song.`
     );
     serverQueue.songs.shift();
     playSong(guildId, serverQueue.songs[0]);
-    return;
   }
-
-  // --- Play the resource ---
-  serverQueue.player.play(resource);
-  serverQueue.connection.subscribe(serverQueue.player);
-
-  serverQueue.player.once(AudioPlayerStatus.Idle, () => {
-    serverQueue.songs.shift();
-    playSong(guildId, serverQueue.songs[0]);
-  });
-
-  await serverQueue.textChannel.send(`🎶 Now playing: **${song.title}**`);
 }
 
 // Login to Discord with your client's token
