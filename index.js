@@ -7,6 +7,9 @@ const {
   ButtonBuilder,
   ButtonStyle,
   EmbedBuilder,
+  ModalBuilder, // Add this
+  TextInputBuilder, // Add this
+  TextInputStyle, // Add this
 } = require("discord.js");
 const {
   joinVoiceChannel,
@@ -70,42 +73,111 @@ client.on("messageCreate", async (message) => {
   }
 });
 
+async function handleModalJump(interaction, serverQueue) {
+  if (!interaction.member.voice.channel) {
+    return interaction.reply({
+      content: "You must be in a voice channel!",
+      ephemeral: true,
+    });
+  }
+  if (!serverQueue) {
+    return interaction.reply({
+      content: "There is no queue to jump in.",
+      ephemeral: true,
+    });
+  }
+
+  const songNumberString =
+    interaction.fields.getTextInputValue("song_number_input");
+  const targetIndex = parseInt(songNumberString, 10);
+
+  if (
+    isNaN(targetIndex) ||
+    targetIndex < 1 ||
+    targetIndex >= serverQueue.songs.length
+  ) {
+    return interaction.reply({
+      content: `Invalid song number. Please provide a number between 1 and ${
+        serverQueue.songs.length - 1
+      }.`,
+      ephemeral: true,
+    });
+  }
+
+  await interaction.deferUpdate();
+
+  const songsToMove = serverQueue.songs.splice(1, targetIndex - 1);
+  serverQueue.songs.push(...songsToMove);
+
+  serverQueue.player.stop();
+}
+
+// Update the main interaction listener
 client.on("interactionCreate", async (interaction) => {
-  if (!interaction.isButton()) return;
   const serverQueue = queue.get(interaction.guildId);
 
-  switch (interaction.customId) {
-    case "skip":
-      await interaction.deferUpdate();
-      handleSkip(interaction, serverQueue);
-      break;
-    case "stop":
-      await interaction.deferUpdate();
-      handleStop(interaction, serverQueue);
-      break;
-    case "shuffle":
-      await interaction.deferUpdate();
-      await handleShuffle(interaction, serverQueue);
-      break;
-    case "loop":
-      await handleLoop(interaction, serverQueue);
-      break;
-    case "panel_prev":
-    case "panel_next":
-      handlePagination(interaction, serverQueue);
-      break;
+  // Handle Modal Submissions
+  if (interaction.isModalSubmit()) {
+    if (interaction.customId === "jump_modal_submit") {
+      await handleModalJump(interaction, serverQueue);
+    }
+    return;
+  }
+
+  // Handle Select Menu Interactions
+  if (interaction.isStringSelectMenu()) {
+    if (interaction.customId === "jump_to_song") {
+      await handleJumpToSong(interaction, serverQueue);
+    }
+    return;
+  }
+
+  // Handle Button Interactions
+  if (interaction.isButton()) {
+    switch (interaction.customId) {
+      case "jump_modal": // Handle the button that opens the modal
+        const modal = new ModalBuilder()
+          .setCustomId("jump_modal_submit")
+          .setTitle("Jump to Song");
+        const songNumberInput = new TextInputBuilder()
+          .setCustomId("song_number_input")
+          .setLabel("Enter the song number from the queue")
+          .setStyle(TextInputStyle.Short)
+          .setPlaceholder("e.g., 28")
+          .setRequired(true);
+        const actionRow = new ActionRowBuilder().addComponents(songNumberInput);
+        modal.addComponents(actionRow);
+        await interaction.showModal(modal);
+        break;
+      case "skip":
+        await interaction.deferUpdate();
+        handleSkip(interaction, serverQueue);
+        break;
+      case "stop":
+        await interaction.deferUpdate();
+        handleStop(interaction, serverQueue);
+        break;
+      case "shuffle":
+        await interaction.deferUpdate();
+        await handleShuffle(interaction, serverQueue);
+        break;
+      case "loop":
+        await handleLoop(interaction, serverQueue);
+        break;
+      case "panel_prev":
+      case "panel_next":
+        handlePagination(interaction, serverQueue);
+        break;
+    }
   }
 });
-// This function now creates all buttons for the main panel
-function createButtonRow(serverQueue) {
+
+function createActionRows(serverQueue) {
   const isLooping = serverQueue?.loop || false;
   const songsPerPage = 10;
-  // We need to check if songs exist before calculating totalPages
-  const totalPages = serverQueue?.songs?.length
-    ? Math.ceil(serverQueue.songs.length / songsPerPage)
-    : 1;
+  const currentPage = serverQueue.currentPage || 0;
 
-  // First row for main controls
+  // --- ROW 1: Playback Controls ---
   const playbackControls = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId("skip")
@@ -126,27 +198,86 @@ function createButtonRow(serverQueue) {
       .setCustomId("loop")
       .setLabel(isLooping ? "Loop: On" : "Loop: Off")
       .setStyle(isLooping ? ButtonStyle.Success : ButtonStyle.Secondary)
-      .setEmoji("🔁")
+      .setEmoji("🔁"),
+    new ButtonBuilder()
+      .setCustomId("jump_modal")
+      .setLabel("Jump")
+      .setStyle(ButtonStyle.Secondary)
+      .setEmoji("🚀")
   );
 
-  // Second row for pagination
+  // --- ROW 2: Pagination Controls ---
+  const totalPages =
+    serverQueue.songs.length > 0
+      ? Math.ceil(serverQueue.songs.length / songsPerPage)
+      : 1;
   const paginationControls = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId("panel_prev")
       .setLabel("Back")
       .setStyle(ButtonStyle.Primary)
       .setEmoji("◀️")
-      .setDisabled(serverQueue.currentPage === 0),
+      .setDisabled(currentPage === 0),
     new ButtonBuilder()
       .setCustomId("panel_next")
       .setLabel("Next")
       .setStyle(ButtonStyle.Primary)
       .setEmoji("▶️")
-      .setDisabled(serverQueue.currentPage >= totalPages - 1)
+      .setDisabled(currentPage >= totalPages - 1)
   );
 
-  // Return an array of both rows
-  return [playbackControls, paginationControls];
+  const components = [playbackControls, paginationControls];
+
+  // --- ROW 3: Jump to Song Select Menu ---
+  const upcomingSongs = serverQueue.songs.slice(1);
+  // MODIFICATION: Populate the dropdown with all upcoming songs (up to 25)
+  if (upcomingSongs.length > 0) {
+    const { StringSelectMenuBuilder } = require("discord.js");
+    const jumpOptions = upcomingSongs.slice(0, 25).map((song, index) => {
+      const songIndex = index + 1;
+      return {
+        label: `${songIndex}. ${song.title}`.substring(0, 100),
+        value: songIndex.toString(),
+      };
+    });
+
+    const jumpMenu = new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId("jump_to_song")
+        .setPlaceholder("Jump to a song...")
+        .addOptions(jumpOptions)
+    );
+    components.push(jumpMenu);
+  }
+
+  return components;
+}
+
+// Add this new function to handle the "Jump to Song" action
+async function handleJumpToSong(interaction, serverQueue) {
+  if (!interaction.member.voice.channel || !serverQueue) {
+    return; // Fail silently
+  }
+
+  const targetIndex = parseInt(interaction.values[0], 10);
+  if (
+    isNaN(targetIndex) ||
+    targetIndex < 1 ||
+    targetIndex >= serverQueue.songs.length
+  ) {
+    return; // Invalid selection, fail silently
+  }
+
+  // Acknowledge the interaction silently
+  await interaction.deferUpdate();
+
+  // Get all songs between the currently playing one and the target song
+  const songsToMove = serverQueue.songs.splice(1, targetIndex - 1);
+  // Add them to the end of the queue
+  serverQueue.songs.push(...songsToMove);
+
+  // Skip the current song to play the selected one next
+  serverQueue.player.stop();
 }
 
 function generatePanelPayload(serverQueue) {
@@ -155,7 +286,10 @@ function generatePanelPayload(serverQueue) {
   }
 
   const songsPerPage = 10;
-  const totalPages = Math.ceil(serverQueue.songs.length / songsPerPage);
+  const totalPages =
+    serverQueue.songs.length > 0
+      ? Math.ceil(serverQueue.songs.length / songsPerPage)
+      : 1;
   const currentPage = serverQueue.currentPage || 0;
   const start = currentPage * songsPerPage;
   const end = start + songsPerPage;
@@ -180,18 +314,15 @@ function generatePanelPayload(serverQueue) {
       .map((song, index) => `**${start + index + 1}.** ${song.title}`)
       .join("\n");
 
-    // --- FIX: Add the length check and truncate if necessary ---
     if (description.length > 1024) {
       description = description.substring(0, 1021) + "...";
     }
-    // -----------------------------------------------------------
-
     embed.addFields({ name: "Up Next", value: description });
   } else {
     embed.addFields({ name: "Up Next", value: "No more songs in the queue." });
   }
 
-  const components = createButtonRow(serverQueue);
+  const components = createActionRows(serverQueue);
   return { embeds: [embed], components };
 }
 
