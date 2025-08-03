@@ -2,7 +2,6 @@ const { updatePanel } = require("./ui");
 const { playSong } = require("./player");
 const queue = require("./queue");
 
-// The 'source' parameter can be either a Message or an Interaction
 function handleSkip(source, serverQueue) {
   if (
     !source.member.voice.channel ||
@@ -12,6 +11,7 @@ function handleSkip(source, serverQueue) {
     return;
   }
   serverQueue.songs.push(serverQueue.songs.shift());
+
   playSong(source.guild.id, serverQueue.songs[0]);
 }
 
@@ -65,19 +65,14 @@ async function handleModalJump(interaction, serverQueue) {
       ephemeral: true,
     });
   }
-
   const songNumberString =
     interaction.fields.getTextInputValue("song_number_input");
   const targetIndex = parseInt(songNumberString, 10);
-
-  // The currently playing song is at index 0, so we can't jump to it or to a negative index.
-  // We also check if the target index is outside the queue's bounds.
   if (
     isNaN(targetIndex) ||
     targetIndex < 1 ||
     targetIndex >= serverQueue.songs.length
   ) {
-    // Use followUp because the interaction was already deferred. This is the fix.
     return interaction.followUp({
       content: `Invalid song number. Please provide a number between 1 and ${
         serverQueue.songs.length - 1
@@ -85,24 +80,40 @@ async function handleModalJump(interaction, serverQueue) {
       ephemeral: true,
     });
   }
-
-  // If validation passes, proceed with the logic.
   const songsToMove = serverQueue.songs.splice(1, targetIndex - 1);
   serverQueue.songs.push(...songsToMove);
-  serverQueue.player.stop(); // This triggers the 'idle' event to play the "new" next song.
+  serverQueue.player.stop();
 }
 
 async function handlePagination(interaction, serverQueue) {
   if (!serverQueue) return;
   const songsPerPage = 10;
   const totalPages = Math.ceil(serverQueue.songs.length / songsPerPage);
-
   if (interaction.customId === "panel_next") {
     if (serverQueue.currentPage < totalPages - 1) serverQueue.currentPage++;
   } else if (interaction.customId === "panel_prev") {
     if (serverQueue.currentPage > 0) serverQueue.currentPage--;
   }
   await updatePanel(serverQueue);
+}
+
+function handlePrevious(source, serverQueue) {
+  if (
+    !source.member.voice.channel ||
+    !serverQueue ||
+    serverQueue.songs.length < 2
+  ) {
+    return;
+  }
+
+  // Take the last song from the array
+  const lastSong = serverQueue.songs.pop();
+
+  // Add it to the very beginning of the array
+  serverQueue.songs.unshift(lastSong);
+
+  // Call playSong directly to start the new song immediately
+  playSong(source.guild.id, serverQueue.songs[0]);
 }
 
 module.exports = {
@@ -112,4 +123,5 @@ module.exports = {
   handleTogglePlayback,
   handleModalJump,
   handlePagination,
+  handlePrevious,
 };

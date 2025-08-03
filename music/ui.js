@@ -19,12 +19,11 @@ function createActionRows(serverQueue) {
   // --- ROW 1: Playback Controls ---
   const playbackControls = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
-      .setCustomId("skip")
-      .setLabel("Skip")
+      .setCustomId("previous")
+      .setLabel("Previous")
       .setStyle(ButtonStyle.Primary)
-      .setEmoji("⏭️")
-      .setDisabled(!hasMultipleSongs), // Disable if there's only one song
-
+      .setEmoji("⏮️")
+      .setDisabled(!hasMultipleSongs),
     new ButtonBuilder()
       .setCustomId("toggle_playback")
       .setLabel(isPaused ? "Resume" : "Pause")
@@ -32,11 +31,20 @@ function createActionRows(serverQueue) {
       .setEmoji(isPaused ? "▶️" : "⏸️"),
 
     new ButtonBuilder()
+      .setCustomId("skip")
+      .setLabel("Skip")
+      .setStyle(ButtonStyle.Primary)
+      .setEmoji("⏭️")
+      .setDisabled(!hasMultipleSongs),
+
+    new ButtonBuilder()
       .setCustomId("stop")
       .setLabel("Stop")
       .setStyle(ButtonStyle.Danger)
-      .setEmoji("⏹️"),
+      .setEmoji("⏹️")
+  );
 
+  const queueControls = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId("shuffle")
       .setLabel("Shuffle")
@@ -52,7 +60,6 @@ function createActionRows(serverQueue) {
       .setDisabled(!hasMultipleSongs)
   );
 
-  // --- ROW 2: Pagination Controls ---
   const paginationControls = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId("panel_prev")
@@ -69,7 +76,7 @@ function createActionRows(serverQueue) {
       .setDisabled(currentPage >= totalPages - 1)
   );
 
-  return [playbackControls, paginationControls];
+  return [playbackControls, queueControls, paginationControls];
 }
 
 function generatePanelPayload(serverQueue) {

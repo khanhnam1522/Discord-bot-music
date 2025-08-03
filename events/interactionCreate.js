@@ -27,6 +27,10 @@ module.exports = {
       // The global deferUpdate() has been removed from here.
 
       switch (interaction.customId) {
+        case "previous": // Add this case
+          await interaction.deferUpdate();
+          actions.handlePrevious(interaction, serverQueue);
+          break;
         case "jump_modal":
           // We do NOT defer here. showModal() is the only reply.
           const modal = new ModalBuilder()

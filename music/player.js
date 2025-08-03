@@ -40,6 +40,7 @@ async function playSong(guildId, song) {
     const currentQueue = queue.get(guildId);
     if (currentQueue) {
       const songThatFinished = currentQueue.songs.shift();
+
       if (currentQueue.loop) {
         currentQueue.songs.push(songThatFinished);
       }
